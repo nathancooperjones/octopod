@@ -10,14 +10,14 @@ from octopod.learner_utils import (DEFAULT_LOSSES_DICT,
                                    )
 
 
-class MultiTaskLearner(object):
+class HierarchicalModel(object):
     """
     Class to encapsulate training and validation steps for a pipeline. Based off the fastai learner.
 
     Parameters
     ----------
     model: torch.nn.Module
-        PyTorch model to use with the Learner
+        PyTorch `nn.ModuleDict` model to use with the Learner
     train_dataloader: MultiDatasetLoader
         dataloader for all of the training data
     val_dataloader: MultiDatasetLoader
@@ -39,7 +39,6 @@ class MultiTaskLearner(object):
         functions. Instead the desired activation functions are applied when needed.
         So we use 'categorical_cross_entropy' and 'bce_logits' loss functions which apply
         softmax and sigmoid activations to their inputs before calculating the loss.
-
     metric_function_dict: dict
         dictionary where keys are task names and values are metric calculation functions.
         If the input is a string matching a supported metric function `multi_class_acc`
@@ -75,7 +74,8 @@ class MultiTaskLearner(object):
         step_scheduler_on_batch,
         optimizer,
         device='cuda:0',
-        best_model=False
+        best_model=False,
+        depth=4,
     ):
         """
         Fit the PyTorch model
@@ -99,6 +99,9 @@ class MultiTaskLearner(object):
             The default is `False`, which will keep the final model from the training run.
             `True` will keep the best model from the training run instead of the model
             from the final epoch of the training cycle.
+        depth: int
+            Maximum depth to optimize for this `fit` cycle (default 4)
+
         """
         self.model = self.model.to(device)
 
@@ -120,6 +123,7 @@ class MultiTaskLearner(object):
             training_loss_dict = {task: 0.0 for task in self.tasks}
 
             overall_training_loss = 0.0
+            number_of_samples = 0
 
             for step, batch in enumerate(progress_bar(self.train_dataloader, parent=pbar)):
                 task_type, (x, y) = batch
@@ -132,7 +136,12 @@ class MultiTaskLearner(object):
                     # skip batches of size 1
                     continue
 
-                output = self.model(x)
+                level_number = self._get_number_from_string(task_type)
+
+                if (level_number + 1) > depth:
+                    continue
+
+                output = self._hacky_thing(task_type=task_type, x=x, level_number=level_number)
 
                 current_loss = self.loss_function_dict[task_type](output[task_type], y)
 
@@ -141,6 +150,7 @@ class MultiTaskLearner(object):
                 training_loss_dict[task_type] += scaled_loss
 
                 overall_training_loss += scaled_loss
+                number_of_samples += num_rows
 
                 optimizer.zero_grad()
                 current_loss.backward()
@@ -148,7 +158,7 @@ class MultiTaskLearner(object):
                 if step_scheduler_on_batch:
                     scheduler.step()
 
-            overall_training_loss = overall_training_loss/self.train_dataloader.total_samples
+            overall_training_loss = overall_training_loss/number_of_samples
 
             for task in self.tasks:
                 training_loss_dict[task] = (
@@ -158,7 +168,8 @@ class MultiTaskLearner(object):
 
             overall_val_loss, val_loss_dict, metrics_scores = self.validate(
                 device,
-                pbar
+                pbar,
+                depth,
             )
 
             if not step_scheduler_on_batch:
@@ -194,7 +205,39 @@ class MultiTaskLearner(object):
             self.model.load_state_dict(best_model_wts)
             print(f'Epoch {best_model_epoch} best model saved with loss of {current_best_loss}')
 
-    def validate(self, device='cuda:0', pbar=None):
+    def _get_number_from_string(self, string):
+        numbers_only_string = ''.join(
+            (character if character in '0123456789' else ' ') for character in string
+        )
+
+        return int(numbers_only_string.split()[0])
+
+    def _hacky_thing(self, task_type, x, level_number):
+        # HACKY
+        if level_number == 0:
+            output = self.model[task_type](x)
+        elif level_number == 1:
+            initial_output = self.model['level_0_START'].get_embeddings(x)
+            output = self.model[task_type](initial_output)
+        elif level_number == 2:
+            initial_output = self.model['level_0_START'].get_embeddings(x)
+            next_output = self.model[
+                'level_1_' + task_type.split('|')[0][8:]
+            ].get_embeddings(initial_output)
+            output = self.model[task_type](next_output)
+        elif level_number == 3:
+            initial_output = self.model['level_0_START'].get_embeddings(x)
+            next_output_1 = self.model[
+                'level_1_' + task_type.split('|')[0][8:]
+            ].get_embeddings(initial_output)
+            next_output_2 = self.model[
+                'level_2_' + '|'.join(task_type.split('|')[:-1])[8:]
+            ].get_embeddings(next_output_1)
+            output = self.model[task_type](next_output_2)
+
+        return output
+
+    def validate(self, device='cuda:0', pbar=None, depth=4):
         """
         Evaluate the model on a validation set
 
@@ -215,6 +258,9 @@ class MultiTaskLearner(object):
             dictionary of validation losses for individual tasks
         metrics_scores: dict
             scores for individual tasks
+        depth: int
+            Maximum depth to optimize for this `fit` cycle (default 4)
+
         """
         preds_dict = {}
 
@@ -224,6 +270,7 @@ class MultiTaskLearner(object):
         )
 
         overall_val_loss = 0.0
+        number_of_samples = 0
 
         self.model.eval()
 
@@ -236,8 +283,14 @@ class MultiTaskLearner(object):
 
                 y = y.to(device)
 
-                output = self.model(x)
                 num_rows = self._get_num_rows(x)
+
+                level_number = self._get_number_from_string(task_type)
+
+                if (level_number + 1) > depth:
+                    continue
+
+                output = self._hacky_thing(task_type=task_type, x=x, level_number=level_number)
 
                 current_loss = self.loss_function_dict[task_type](output[task_type], y)
 
@@ -245,13 +298,14 @@ class MultiTaskLearner(object):
 
                 val_loss_dict[task_type] += scaled_loss
                 overall_val_loss += scaled_loss
+                number_of_samples += num_rows
 
                 y_pred = output[task_type].cpu().numpy()
                 y_true = y.cpu().numpy()
 
                 preds_dict = self._update_preds_dict(preds_dict, task_type, y_true, y_pred)
 
-        overall_val_loss /= self.val_dataloader.total_samples
+        overall_val_loss /= number_of_samples
 
         for task in self.tasks:
             val_loss_dict[task] = (
@@ -270,53 +324,29 @@ class MultiTaskLearner(object):
 
         return overall_val_loss, val_loss_dict, metrics_scores
 
-    def get_val_preds(self, device='cuda:0'):
+    def predict(self, x):
+        """TODO."""
+        pass
+
+    def _return_input_on_device(self, x, device):
         """
-        Return true labels and predictions for data in self.val_dataloaders
+        Send all model inputs to the appropriate device (GPU or CPU)
+        when the inputs are in a dictionary format.
 
         Parameters
         ----------
-        device: str (defaults to 'cuda:0')
-            device to run calculations on
+        x: dict
+            Output of a dataloader where the dataset generator groups multiple
+            model inputs (such as multiple images) into a dictionary. Example
+            `{'full_img':some_tensor,'crop_img':some_tensor}`
 
-        Returns
-        -------
-        Dictionary with dictionary for each task type:
-            'y_true': numpy array of true labels, shape: (num_rows,)
-            'y_pred': numpy of array of predicted probabilities: shape (num_rows, num_labels)
         """
-        preds_dict = {}
-        self.model = self.model.to(device)
-        self.model.eval()
-
-        with torch.no_grad():
-            for step, batch in enumerate(progress_bar(self.val_dataloader, leave=False)):
-                task_type, (x, y) = batch
-                x = self._return_input_on_device(x, device)
-
-                y = y.to(device)
-
-                output = self.model(x)
-
-                y_pred = output[task_type].cpu().numpy()
-                y_true = y.cpu().numpy()
-
-                preds_dict = self._update_preds_dict(preds_dict, task_type, y_true, y_pred)
-
-        for task in self.tasks:
-            metrics_scores, y_preds = (
-                self.metric_function_dict[task](preds_dict[task]['y_true'],
-                                                preds_dict[task]['y_pred'])
-            )
-            preds_dict[task]['y_pred'] = y_preds
-
-        return preds_dict
-
-    def _return_input_on_device(self, x, device):
-        return x.to(device)
+        for k, v in x.items():
+            x[k] = v.to(device)
+        return x
 
     def _get_num_rows(self, x):
-        return x.size(0)
+        return x[next(iter(x))].size(0)
 
     def _update_preds_dict(self, preds_dict, task_type, y_true, y_pred):
         """
@@ -409,45 +439,3 @@ class MultiTaskLearner(object):
 
             raise Exception(f'make sure all tasks are contained in the {input_str} dictionary '
                             f'missing tasks are {missing_tasks}')
-
-
-class MultiInputMultiTaskLearner(MultiTaskLearner):
-    """
-    Multi Input subclass of MultiTaskLearner class
-
-    Parameters
-    ----------
-    model: torch.nn.Module
-        PyTorch model to use with the Learner
-    train_dataloader: MultiDatasetLoader
-        dataloader for all of the training data
-    val_dataloader: MultiDatasetLoader
-        dataloader for all of the validation data
-    task_dict: dict
-        dictionary with all of the tasks as keys and the number of unique labels as the values
-
-    Notes
-    -----
-    Multi-input datasets should return x's as a tuple/list so that each element
-    can be sent to the appropriate device before being sent to the model
-    see octopod.vision.dataset's OctopodImageDataset class for an example
-    """
-    def _return_input_on_device(self, x, device):
-        """
-        Send all model inputs to the appropriate device (GPU or CPU)
-        when the inputs are in a dictionary format.
-
-        Parameters
-        ----------
-        x: dict
-            Output of a dataloader where the dataset generator groups multiple
-            model inputs (such as multiple images) into a dictionary. Example
-            `{'full_img':some_tensor,'crop_img':some_tensor}`
-
-        """
-        for k, v in x.items():
-            x[k] = v.to(device)
-        return x
-
-    def _get_num_rows(self, x):
-        return x[next(iter(x))].size(0)
