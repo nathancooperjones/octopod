@@ -47,6 +47,9 @@ class MultiDatasetLoader(object):
         num_batches = 0
 
         for key in self.loader_dict.keys():
+            if get_number_from_string(key) >= self.depth:
+                continue
+
             num_batches += len(self.loader_dict[key])
 
         return num_batches

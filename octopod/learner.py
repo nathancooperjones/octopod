@@ -262,11 +262,13 @@ class HierarchicalModel(object):
             )
 
         for task in metrics_scores.keys():
+            try:
+                y_true = preds_dict[task]['y_true']
+                y_raw_pred = preds_dict[task]['y_pred']
 
-            y_true = preds_dict[task]['y_true']
-            y_raw_pred = preds_dict[task]['y_pred']
-
-            metric_score, y_preds = self.metric_function(y_true, y_raw_pred)
+                metric_score, _ = self.metric_function(y_true, y_raw_pred)
+            except KeyError:
+                metric_score = -1
 
             metrics_scores[task][self.metric_function.__name__] = metric_score
 
