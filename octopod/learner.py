@@ -6,8 +6,8 @@ import numpy as np
 import torch
 
 from octopod.learner_utils import (DEFAULT_LOSSES_DICT,
-                                   DEFAULT_METRIC_DICT,
-                                   )
+                                   DEFAULT_METRIC_DICT)
+from octopod.vision.helpers import get_number_from_string
 
 
 class HierarchicalModel(object):
@@ -136,14 +136,14 @@ class HierarchicalModel(object):
                     # skip batches of size 1
                     continue
 
-                level_number = self._get_number_from_string(task_type)
+                level_number = get_number_from_string(task_type)
 
                 if (level_number + 1) > depth:
                     continue
 
                 output = self._hacky_thing(task_type=task_type, x=x, level_number=level_number)
 
-                current_loss = self.loss_function_dict[task_type](output[task_type], y)
+                current_loss = self.loss_function_dict[task_type](output, y)
 
                 scaled_loss = current_loss.item() * num_rows
 
@@ -204,13 +204,6 @@ class HierarchicalModel(object):
         if best_model:
             self.model.load_state_dict(best_model_wts)
             print(f'Epoch {best_model_epoch} best model saved with loss of {current_best_loss}')
-
-    def _get_number_from_string(self, string):
-        numbers_only_string = ''.join(
-            (character if character in '0123456789' else ' ') for character in string
-        )
-
-        return int(numbers_only_string.split()[0])
 
     def _hacky_thing(self, task_type, x, level_number):
         # HACKY
@@ -285,14 +278,14 @@ class HierarchicalModel(object):
 
                 num_rows = self._get_num_rows(x)
 
-                level_number = self._get_number_from_string(task_type)
+                level_number = get_number_from_string(task_type)
 
                 if (level_number + 1) > depth:
                     continue
 
                 output = self._hacky_thing(task_type=task_type, x=x, level_number=level_number)
 
-                current_loss = self.loss_function_dict[task_type](output[task_type], y)
+                current_loss = self.loss_function_dict[task_type](output, y)
 
                 scaled_loss = current_loss.item() * num_rows
 
@@ -300,7 +293,7 @@ class HierarchicalModel(object):
                 overall_val_loss += scaled_loss
                 number_of_samples += num_rows
 
-                y_pred = output[task_type].cpu().numpy()
+                y_pred = output.cpu().numpy()
                 y_true = y.cpu().numpy()
 
                 preds_dict = self._update_preds_dict(preds_dict, task_type, y_true, y_pred)

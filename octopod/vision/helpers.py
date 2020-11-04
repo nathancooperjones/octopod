@@ -42,5 +42,14 @@ class _Identity(nn.Module):
 def _dense_block(in_f, out_f, reg):
     return nn.Sequential(nn.Linear(in_f, out_f),
                          nn.BatchNorm1d(out_f, eps=reg),
-                         nn.ReLU()
+                         nn.ReLU(),
                          )
+
+
+def get_number_from_string(string):
+    """Get the level number from a string of level_#_XX."""
+    numbers_only_string = ''.join(
+        (character if character in '0123456789' else ' ') for character in string
+    )
+
+    return int(numbers_only_string.split()[0])

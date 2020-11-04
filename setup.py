@@ -10,7 +10,7 @@ setup(
     name='octopod',
     version=__version__,
     description='General purpose multi-task classification library',
-    long_description=readme+'\n\n\nLicense\n-------\n'+license,
+    long_description=readme,
     long_description_content_type='text/markdown',
     packages=find_packages(exclude=('tests', 'docs')),
     install_requires=[

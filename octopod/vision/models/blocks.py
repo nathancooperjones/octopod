@@ -37,8 +37,6 @@ class ResNetStartingBlock(nn.Module):
         )
 
         self.classifier = nn.Linear(256, task_size)
-        # for key, task_size in new_task_dict.items():
-        #   new_layers[key] = nn.Linear(256, task_size)
 
     def forward(self, x):
         """
