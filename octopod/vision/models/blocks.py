@@ -86,6 +86,27 @@ class ResNetStartingBlock(nn.Module):
 
         return dense_layer_output
 
+    def predict(self, x):
+        """
+        Return outputs of `forward` and `get_embeddings` in a single pass.
+
+        Parameters
+        ----------
+        x: torch.tensor, 2-d
+            Input should be of shape `batch_size * start`
+
+        Returns
+        ----------
+        forward_output: torch.tensor, 2-d
+            Output will be of shape `batch_size * task_size`
+        get_embeddings_output: torch.tensor, 2-d
+            Output will be of shape `batch_size * 256`
+
+        """
+        dense_layer_output = self.get_embeddings(x)
+
+        return self.classifier(dense_layer_output), dense_layer_output
+
 
 class DenseBlock(nn.Module):
     """
@@ -161,3 +182,24 @@ class DenseBlock(nn.Module):
         dense_layer_output = self.dense_layers(x)
 
         return dense_layer_output
+
+    def predict(self, x):
+        """
+        Return outputs of `forward` and `get_embeddings` in a single pass.
+
+        Parameters
+        ----------
+        x: torch.tensor, 2-d
+            Input should be of shape `batch_size * start`
+
+        Returns
+        ----------
+        forward_output: torch.tensor, 2-d
+            Output will be of shape `batch_size * task_size`
+        get_embeddings_output: torch.tensor, 2-d
+            Output will be of shape `batch_size * end`
+
+        """
+        dense_layer_output = self.get_embeddings(x)
+
+        return self.classifier(dense_layer_output), dense_layer_output
