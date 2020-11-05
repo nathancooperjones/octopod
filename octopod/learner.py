@@ -32,6 +32,8 @@ class HierarchicalModel(object):
     metric_function: str
         Metric to use out of the options in
         `octopod.learner_utils.metrics_utils.DEFAULT_METRIC_DICT`
+    start_level: str
+        Key for the first level in the hierarchy (default 'level_0_START')
 
     """
     def __init__(self,
@@ -40,7 +42,8 @@ class HierarchicalModel(object):
                  val_dataloader,
                  task_dict,
                  loss_function='categorical_cross_entropy',
-                 metric_function='multi_class_acc'):
+                 metric_function='multi_class_acc',
+                 start_level='level_0_START'):
         self.models = models
         self.train_dataloader = train_dataloader
         self.val_dataloader = val_dataloader
@@ -48,6 +51,7 @@ class HierarchicalModel(object):
         self.tasks = [*task_dict]
         self.loss_function = DEFAULT_LOSSES_DICT[loss_function]
         self.metric_function = DEFAULT_METRIC_DICT[metric_function]
+        self.start_level = start_level
 
     def fit(
         self,
@@ -275,31 +279,24 @@ class HierarchicalModel(object):
         return overall_val_loss, val_loss_dict, metrics_scores
 
     def _hacky_thing(self, task_type, x, level_number):
-        # HACKY
         if level_number == 0:
-            output = self.models[task_type](x)
-        elif level_number == 1:
-            initial_output = self.models['level_0_START'].get_embeddings(x)
-            output = self.models[task_type](initial_output)
-        elif level_number == 2:
-            initial_output = self.models['level_0_START'].get_embeddings(x)
-            next_output = self.models[
-                'level_1_' + task_type.split('|')[0][8:]
-            ].get_embeddings(initial_output)
-            output = self.models[task_type](next_output)
-        elif level_number == 3:
-            initial_output = self.models['level_0_START'].get_embeddings(x)
-            next_output_1 = self.models[
-                'level_1_' + task_type.split('|')[0][8:]
-            ].get_embeddings(initial_output)
-            next_output_2 = self.models[
-                'level_2_' + '|'.join(task_type.split('|')[:-1])[8:]
-            ].get_embeddings(next_output_1)
-            output = self.models[task_type](next_output_2)
+            output = self.models[self.start_level](x)
+        else:
+            output = self.models[self.start_level].get_embeddings(x)
+            for i in range(1, level_number):
+                if i == 1:
+                    output = self.models[
+                        f'level_{i}_' + task_type.split('|')[0][8:]
+                    ].get_embeddings(output)
+                else:
+                    output = self.models[
+                        f'level_{i}_' + '|'.join(task_type.split('|')[:-1])[8:]
+                    ].get_embeddings(output)
+            output = self.models[task_type](output)
 
         return output
 
-    def predict(self, image_path, label_mapping_dict, start_level='level_0_START', device='cuda:0'):
+    def predict(self, image_path, label_mapping_dict, device='cuda:0'):
         """
         For a single input image, predict down the model hierarchy.
 
@@ -339,7 +336,7 @@ class HierarchicalModel(object):
                 if len(current_layer_list) > 0:
                     current_layer = f'level_{str(current_level)}_' + '|'.join(current_layer_list)
                 else:
-                    current_layer = start_level
+                    current_layer = self.start_level
 
                 if label_mapping_dict.get(current_layer) is None:
                     break
