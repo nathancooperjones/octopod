@@ -39,10 +39,11 @@ class _Identity(nn.Module):
         return x
 
 
-def _dense_block(in_f, out_f, reg):
+def _dense_block(in_f, out_f, reg, dropout_p):
     return nn.Sequential(nn.Linear(in_f, out_f),
                          nn.BatchNorm1d(out_f, eps=reg),
                          nn.ReLU(),
+                         nn.Dropout(dropout_p),
                          )
 
 

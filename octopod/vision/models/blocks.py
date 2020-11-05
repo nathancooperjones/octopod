@@ -31,12 +31,11 @@ class ResNetStartingBlock(nn.Module):
         self.resnet.fc = _Identity()
 
         self.dense_layers = nn.Sequential(
-            _dense_block(2048*2, 1024, 2e-3),
-            _dense_block(1024, 512, 2e-3),
-            _dense_block(512, 256, 2e-3),
+            _dense_block(2048*2, 1024, 2e-3, 0.05),
+            _dense_block(1024, 512, 2e-3, 0.05),
         )
 
-        self.classifier = nn.Linear(256, task_size)
+        self.classifier = nn.Linear(512, task_size)
 
     def forward(self, x):
         """
@@ -135,11 +134,8 @@ class DenseBlock(nn.Module):
                  end=None):
         super(DenseBlock, self).__init__()
 
-        middle = int((start + end) / 2)
-
         self.dense_layers = nn.Sequential(
-            _dense_block(start, middle, 2e-3),
-            _dense_block(middle, end, 2e-3),
+            _dense_block(start, end, 2e-3, 0.05),
         )
 
         self.classifier = nn.Linear(end, task_size)
