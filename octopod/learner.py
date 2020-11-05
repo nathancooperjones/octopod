@@ -1,3 +1,4 @@
+from collections import defaultdict
 import copy
 import time
 
@@ -6,8 +7,8 @@ import numpy as np
 import torch
 
 from octopod.learner_utils import (DEFAULT_LOSSES_DICT,
-                                   DEFAULT_METRIC_DICT,
-                                   )
+                                   DEFAULT_METRIC_DICT)
+from octopod.vision.models import SoftSharingModel
 
 
 class MultiTaskLearner(object):
@@ -52,6 +53,15 @@ class MultiTaskLearner(object):
         for that task.
 
         See `learner_utils.loss_utils_config` for examples.
+    soft_loss_weighting: float
+        Amount to weight the soft loss to compared to the classification loss. Note this is only
+        applicable for `SoftSharingModel` models (default 0.001)
+    soft_loss_p: str
+        The order of norm for the soft loss. Set to `'fro'` for the L2 norm or `'nuc'` for the
+        trace / nuclear norm. See `torch.norm` documentation at
+        https://pytorch.org/docs/stable/generated/torch.norm.html for more options. Note this is
+        only applicable for `SoftSharingModel` models (default 'fro')
+
     """
     def __init__(self,
                  model,
@@ -59,7 +69,9 @@ class MultiTaskLearner(object):
                  val_dataloader,
                  task_dict,
                  loss_function_dict=None,
-                 metric_function_dict=None):
+                 metric_function_dict=None,
+                 soft_loss_weighting=0.001,
+                 soft_loss_p='fro'):
         self.model = model
         self.train_dataloader = train_dataloader
         self.val_dataloader = val_dataloader
@@ -67,6 +79,8 @@ class MultiTaskLearner(object):
         self.tasks = [*task_dict]
         self.loss_function_dict = self._get_loss_functions(loss_function_dict)
         self.metric_function_dict = self._get_metric_functions(metric_function_dict)
+        self.soft_loss_weighting = soft_loss_weighting
+        self.soft_loss_p = soft_loss_p
 
     def fit(
         self,
@@ -135,6 +149,10 @@ class MultiTaskLearner(object):
                 output = self.model(x)
 
                 current_loss = self.loss_function_dict[task_type](output[task_type], y)
+
+                if isinstance(self.model, SoftSharingModel):
+                    soft_loss = self._compute_soft_loss(p=self.soft_loss_p, device=device)
+                    current_loss += self.soft_loss_weighting * soft_loss
 
                 scaled_loss = current_loss.item() * num_rows
 
@@ -241,6 +259,10 @@ class MultiTaskLearner(object):
 
                 current_loss = self.loss_function_dict[task_type](output[task_type], y)
 
+                if isinstance(self.model, SoftSharingModel):
+                    soft_loss = self._compute_soft_loss(p=self.soft_loss_p, device=device)
+                    current_loss += self.soft_loss_weighting * soft_loss
+
                 scaled_loss = current_loss.item() * num_rows
 
                 val_loss_dict[task_type] += scaled_loss
@@ -269,6 +291,46 @@ class MultiTaskLearner(object):
             metrics_scores[task][self.metric_function_dict[task].__name__] = metric_score
 
         return overall_val_loss, val_loss_dict, metrics_scores
+
+    def _compute_soft_loss(self, p='nuc', device='cuda:0'):
+        """Compute soft loss between relevant model dense layer parameter groups."""
+        # get relevant `dense_layer` parameters
+        parameter_groups = defaultdict(list)
+        for parameter_name, parameter_weights in self.model.named_parameters():
+            if (
+                'dense_layer' in parameter_name
+                and 'weight' in parameter_name
+                and parameter_weights.dim() == 2
+            ):
+                layer_number = self._get_number_from_string(parameter_name)
+                # give it a unique name that shows 1) pretrained vs. new, and 2) exact layer number
+                layer_key = parameter_name[:3] + '_' + layer_number
+                parameter_groups[layer_key].append(parameter_weights)
+
+        # calculate loss for each group
+        soft_sharing_loss = torch.tensor(0.0, dtype=torch.float, device=device)
+        for parameter_key in parameter_groups.keys():
+            subtracted_vectors = parameter_groups[parameter_key][0]
+            for parameter_value_idx in range(1, len(parameter_groups[parameter_key])):
+                subtracted_vectors = (
+                    subtracted_vectors - parameter_groups[parameter_key][parameter_value_idx]
+                )
+
+            soft_sharing_loss += torch.norm(subtracted_vectors, p='nuc')
+
+        return soft_sharing_loss.to(device)
+
+    def _get_number_from_string(self, string):
+        """Get the first actual float in a string."""
+        floats_only_string = ''.join(
+            (character if character in '0123456789.' else ' ') for character in string
+        )
+        numbers_only_string = ' '.join(
+            potential_number.strip('.')
+            for potential_number in floats_only_string.split() if potential_number.strip('.') != ''
+        )
+
+        return str(numbers_only_string.split()[0])
 
     def get_val_preds(self, device='cuda:0'):
         """

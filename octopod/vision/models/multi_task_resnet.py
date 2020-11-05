@@ -297,3 +297,286 @@ class ResnetForMultiTaskClassification(nn.Module):
 
         if hold_new_classifiers is not None:
             self.new_classifiers = hold_new_classifiers
+
+
+class SoftSharingModel(ResnetForMultiTaskClassification):
+    """
+    TODO.
+
+    Parameters
+    ----------
+    pretrained_task_dict: dict
+        dictionary mapping each pretrained task to the number of labels it has
+    new_task_dict: dict
+        dictionary mapping each new task to the number of labels it has
+    load_pretrained_resnet: boolean
+        flag for whether or not to load in pretrained weights for ResNet50.
+        useful for the first round of training before there are fine tuned weights
+
+    """
+    def __init__(self, pretrained_task_dict=None, new_task_dict=None, load_pretrained_resnet=False):
+        super(ResnetForMultiTaskClassification, self).__init__()
+
+        self.resnet = torch_models.resnet50(pretrained=load_pretrained_resnet)
+        self.resnet.fc = _Identity()
+
+        if pretrained_task_dict is not None:
+            pretrained_dense_layers = {}
+            pretrained_classification_layers = {}
+            for key, task_size in pretrained_task_dict.items():
+                pretrained_dense_layers[key] = nn.Sequential(
+                    _dense_block(2048*2, 1024, 2e-3),
+                    _dense_block(1024, 512, 2e-3),
+                )
+                pretrained_classification_layers[key] = nn.Sequential(
+                    _dense_block(512, 256, 2e-3),
+                    nn.Linear(256, task_size),
+                )
+            self.pretrained_dense_layers = nn.ModuleDict(pretrained_dense_layers)
+            self.pretrained_classifiers = nn.ModuleDict(pretrained_classification_layers)
+
+        if new_task_dict is not None:
+            new_dense_layers = {}
+            new_classification_layers = {}
+            for key, task_size in new_task_dict.items():
+                new_dense_layers[key] = nn.Sequential(
+                    _dense_block(2048*2, 1024, 2e-3),
+                    _dense_block(1024, 512, 2e-3),
+                )
+                new_classification_layers[key] = nn.Sequential(
+                    _dense_block(512, 256, 2e-3),
+                    nn.Linear(256, task_size),
+                )
+            self.new_dense_layers = nn.ModuleDict(new_dense_layers)
+            self.new_classifiers = nn.ModuleDict(new_classification_layers)
+
+    def forward(self, x):
+        """
+        Defines forward pass for image model
+
+        Parameters
+        ----------
+        x: dict of image tensors containing tensors for
+        full and cropped images. the full image tensor
+        has the key 'full_img' and the cropped tensor has
+        the key 'crop_img'
+
+        Returns
+        ----------
+        A dictionary mapping each task to its logits
+        """
+        full_img = self.resnet(x['full_img']).squeeze()
+        crop_img = self.resnet(x['crop_img']).squeeze()
+
+        if x[next(iter(x))].shape[0] == 1:
+            # if batch size is 1, or a single image, during inference
+            full_crop_combined = torch.cat((full_img, crop_img), 0).unsqueeze(0)
+        else:
+            full_crop_combined = torch.cat((full_img, crop_img), 1)
+
+        logit_dict = {}
+        if hasattr(self, 'pretrained_classifiers'):
+            for key, dense_layer in self.pretrained_dense_layers.items():
+                if key not in logit_dict:
+                    logit_dict[key] = full_crop_combined
+                logit_dict[key] = dense_layer(logit_dict[key])
+
+            for key, classifier in self.pretrained_classifiers.items():
+                logit_dict[key] = classifier(logit_dict[key])
+
+        if hasattr(self, 'new_classifiers'):
+            for key, dense_layer in self.new_dense_layers.items():
+                if key not in logit_dict:
+                    logit_dict[key] = full_crop_combined
+                logit_dict[key] = dense_layer(logit_dict[key])
+
+            for key, classifier in self.new_classifiers.items():
+                logit_dict[key] = classifier(logit_dict[key])
+
+        return logit_dict
+
+    def freeze_core(self):
+        """Freeze all core model layers"""
+        for param in self.resnet.parameters():
+            param.requires_grad = False
+
+    def freeze_dense(self):
+        """Freeze all pre-trained dense layers."""
+        for param in self.pretrained_dense_layers.parameters():
+            param.requires_grad = False
+
+    def unfreeze_pretrained_classifiers_and_core(self):
+        """Unfreeze pretrained classifiers and core model layers"""
+        for param in self.resnet.parameters():
+            param.requires_grad = True
+        for param in self.pretrained_dense_layers.parameters():
+            param.requires_grad = True
+        for param in self.new_dense_layers.parameters():
+            param.requires_grad = True
+        self.unfreeze_pretrained_classifiers()
+
+    def save(self, folder, model_id):
+        """
+        Saves the model state dicts to a specific folder.
+        Each part of the model is saved separately to allow for
+        new classifiers to be added later.
+
+        Note: if the model has `pretrained_classifiers` and `new_classifers`,
+        they will be combined into the `pretrained_classifiers_dict`.
+
+        Parameters
+        ----------
+        folder: str or Path
+            place to store state dictionaries
+        model_id: int
+            unique id for this model
+
+        Side Effects
+        ------------
+        saves three files:
+            - folder / f'resnet_dict_{model_id}.pth'
+            - folder / f'dense_layers_dict_{model_id}.pth'
+            - folder / f'pretrained_classifiers_dict_{model_id}.pth'
+        """
+        # TODO!
+        if not hasattr(self, 'pretrained_classifiers'):
+            dense_layers_to_save = copy.deepcopy(self.new_classifiers)
+        else:
+            # PyTorch's update method isn't working because it doesn't think ModuleDict is a Mapping
+            dense_layers_to_save = copy.deepcopy(self.pretrained_classifiers)
+            if hasattr(self, 'new_classifiers'):
+                for key, module in self.new_classifiers.items():
+                    dense_layers_to_save[key] = module
+
+        if not hasattr(self, 'pretrained_classifiers'):
+            classifiers_to_save = copy.deepcopy(self.new_classifiers)
+        else:
+            # PyTorch's update method isn't working because it doesn't think ModuleDict is a Mapping
+            classifiers_to_save = copy.deepcopy(self.pretrained_classifiers)
+            if hasattr(self, 'new_classifiers'):
+                for key, module in self.new_classifiers.items():
+                    classifiers_to_save[key] = module
+
+        folder = Path(folder)
+        folder.mkdir(parents=True, exist_ok=True)
+
+        torch.save(
+            self.resnet.state_dict(),
+            folder / f'resnet_dict_{model_id}.pth'
+        )
+        torch.save(
+            self.dense_layers.state_dict(),
+            folder / f'dense_layers_dict_{model_id}.pth'
+        )
+
+        torch.save(
+            classifiers_to_save.state_dict(),
+            folder / f'pretrained_classifiers_dict_{model_id}.pth'
+        )
+
+    def load(self, folder, model_id):
+        """
+        Loads the model state dicts from a specific folder.
+
+        Parameters
+        ----------
+        folder: str or Path
+            place where state dictionaries are stored
+        model_id: int
+            unique id for this model
+
+        Side Effects
+        ------------
+        loads from three files:
+            - folder / f'resnet_dict_{model_id}.pth'
+            - folder / f'dense_layers_dict_{model_id}.pth'
+            - folder / f'pretrained_classifiers_dict_{model_id}.pth'
+        """
+        # TODO!
+        folder = Path(folder)
+
+        if torch.cuda.is_available():
+            self.resnet.load_state_dict(torch.load(folder / f'resnet_dict_{model_id}.pth'))
+            self.dense_layers.load_state_dict(
+                torch.load(folder / f'dense_layers_dict_{model_id}.pth'))
+            self.pretrained_classifiers.load_state_dict(
+                torch.load(folder / f'pretrained_classifiers_dict_{model_id}.pth')
+            )
+        else:
+            self.resnet.load_state_dict(
+                torch.load(
+                    folder / f'resnet_dict_{model_id}.pth',
+                    map_location=lambda storage,
+                    loc: storage
+                )
+            )
+            self.dense_layers.load_state_dict(
+                torch.load(
+                    folder / f'dense_layers_dict_{model_id}.pth',
+                    map_location=lambda storage,
+                    loc: storage
+                )
+            )
+            self.pretrained_classifiers.load_state_dict(
+                torch.load(
+                    folder / f'pretrained_classifiers_dict_{model_id}.pth',
+                    map_location=lambda storage,
+                    loc: storage
+                )
+            )
+
+    def export(self, folder, model_id, model_name=None):
+        """
+        Exports the entire model state dict to a specific folder.
+        Note: if the model has `pretrained_classifiers` and `new_classifiers`,
+        they will be combined into the `pretrained_classifiers` attribute before being saved.
+
+        Parameters
+        ----------
+        folder: str or Path
+            place to store state dictionaries
+        model_id: int
+            unique id for this model
+        model_name: str (defaults to None)
+            Name to store model under, if None, will default to `multi_task_bert_{model_id}.pth`
+
+        Side Effects
+        ------------
+        saves one file:
+            - folder / model_name
+        """
+        # TODO!
+        if hasattr(self, 'new_classifiers'):
+            hold_new_classifiers = copy.deepcopy(self.new_classifiers)
+        else:
+            hold_new_classifiers = None
+
+        hold_pretrained_classifiers = None
+        if not hasattr(self, 'pretrained_classifiers'):
+            self.pretrained_classifiers = copy.deepcopy(self.new_classifiers)
+        else:
+            hold_pretrained_classifiers = copy.deepcopy(self.pretrained_classifiers)
+            # PyTorch's update method isn't working because it doesn't think ModuleDict is a Mapping
+            if hasattr(self, 'new_classifiers'):
+                for key, module in self.new_classifiers.items():
+                    self.pretrained_classifiers[key] = module
+        if hasattr(self, 'new_classifiers'):
+            del self.new_classifiers
+
+        if model_name is None:
+            model_name = f'multi_task_resnet_{model_id}.pth'
+
+        folder = Path(folder)
+        folder.mkdir(parents=True, exist_ok=True)
+
+        torch.save(
+            self.state_dict(),
+            folder / model_name
+        )
+        if hold_pretrained_classifiers is not None:
+            self.pretrained_classifiers = hold_pretrained_classifiers
+        else:
+            del self.pretrained_classifiers
+
+        if hold_new_classifiers is not None:
+            self.new_classifiers = hold_new_classifiers
