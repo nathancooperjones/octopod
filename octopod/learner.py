@@ -304,7 +304,7 @@ class MultiTaskLearner(object):
             ):
                 layer_number = self._get_number_from_string(parameter_name)
                 # give it a unique name that shows 1) pretrained vs. new, and 2) exact layer number
-                layer_key = parameter_name[:3] + '_' + layer_number
+                layer_key = layer_number
                 parameter_groups[layer_key].append(parameter_weights)
 
         # calculate loss for each group
@@ -316,7 +316,7 @@ class MultiTaskLearner(object):
                     subtracted_vectors - parameter_groups[parameter_key][parameter_value_idx]
                 )
 
-            soft_sharing_loss += torch.norm(subtracted_vectors, p='nuc')
+            soft_sharing_loss += torch.norm(subtracted_vectors, p=p)
 
         return soft_sharing_loss.to(device)
 
