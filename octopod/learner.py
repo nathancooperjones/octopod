@@ -346,7 +346,7 @@ class HierarchicalModel(object):
 
                 prediction_layer, embedding = self.models[current_layer].predict(model_input)
                 prediction_idx = torch.argmax(prediction_layer)
-                next_layer = label_mapping_dict[start_level][prediction_idx]
+                next_layer = label_mapping_dict[current_layer][prediction_idx]
 
                 current_layer_list.append(next_layer)
                 current_level += 1
